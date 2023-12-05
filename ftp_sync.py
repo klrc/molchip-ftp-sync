@@ -134,6 +134,7 @@ class FTPSync:
         if self.verbose:
             logger.success(f"> PULL {name}")
         self.download_from_ftp(conn, name)
+        self.delete_from_ftp(conn, name)
         if self.verbose:
             logger.success(f"archive {name}.recv")
         with tarfile.open(f"{name}.recv", "w") as tf:
@@ -143,7 +144,6 @@ class FTPSync:
         self.upload_to_ftp(conn, f"{name}.recv")
         self.remove_if_exists(f"{name}.recv")
         self.remove_if_exists(name)
-        self.delete_from_ftp(conn, name)
 
     def parse_action_exec(self, conn, name: str):
         """Use suffix=.servername.exec as EXEC mode
@@ -242,6 +242,8 @@ class FTPSync:
                 tf.add(path)
         with self.connect_to_ftp() as conn:
             self.upload_to_ftp(conn, package_name)
+            while package_name in conn.nlst():  # Wait for receive
+                time.sleep(self.interval)
         self.remove_if_exists(package_name)
 
     def pull(self, *path_list):
