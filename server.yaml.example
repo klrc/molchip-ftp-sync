@@ -1,0 +1,6 @@
+sync_id: laptop-sh
+sync_mode: server
+ftp_host: 114.51.4.191
+ftp_username: myusername
+ftp_password: mypassword
+ftp_encoding: gbk

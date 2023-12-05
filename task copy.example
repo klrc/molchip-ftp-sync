@@ -1,0 +1,42 @@
+sync_id: laptop-sh
+sync_mode: client
+ftp_host: 114.51.4.191
+ftp_username: myusername
+ftp_password: mypassword
+ftp_encoding: gbk
+
+actions:
+  - type: shell
+    root: '.'
+    device: remote
+    args: 
+      log_file: 'remote_exec.log'
+      command_list:
+        - mkdir -p ./my_project && rm -rf ./my_project/*
+
+  - type: pack
+    root: '.'
+    device: local
+    args:
+      send_tar: my_project-essential.tar.gz
+      send_path: ./my_project
+      send_list:
+        - ./Makefile
+
+  - type: shell
+    root: '.'
+    device: remote
+    args: 
+      log_file: 'remote_exec.log'
+      command_list:
+        - cd ./my_project && echo 'helloworld!'
+        - cd ./my_project && echo 'some data'> result.txt
+
+  - type: pack
+    root: ./my_project
+    device: remote
+    args:
+      send_tar: my_project-response.tar.gz
+      send_path: '.'
+      send_list:
+       - ./result.txt

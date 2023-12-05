@@ -1,67 +1,148 @@
 import os
 import time
-import datetime
 import tarfile
 import argparse
 from ftplib import FTP
 from loguru import logger
 import sys
-import json
 import yaml
 
-fmt = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{message}</level>"
-config = {
-    "handlers": [
-        {"sink": sys.stderr, "format": fmt},
-    ],
-}
-logger.configure(**config)
+logger.configure(handlers=[{"sink": sys.stderr, "format": "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{message}</level>"}])
 
 
 class FTPSync:
-    """An Server class to listen for requests on normal device
+    def __init__(self, yaml_file) -> None:
+        self.sync_id = None
+        self.sync_mode = None
+        self.ftp_host = None
+        self.ftp_username = None
+        self.ftp_password = None
+        self.ftp_encoding = None
+        self.workdir = os.getcwd()
+        with open(yaml_file, "r") as f:
+            config = yaml.load(f, Loader=yaml.SafeLoader)
+        self.parse_settings(config)
+        self.interval = 4.0
 
-    Based on FTP and both device should be able to connect the same FTP host.
+    def task(self, yaml_file):
+        request_file = f"{yaml_file}.{self.sync_id}_request"
+        os.system(f"cp {yaml_file} {request_file}")
+        self.upload_to_ftp(request_file)
+        with open(request_file, "r") as f:
+            config = yaml.load(f, Loader=yaml.SafeLoader)
+        self.remove_if_exists(request_file)
+        self.parse_actions(config)
 
-    Example:
+    def listen(self):
+        while True:
+            logger.success(f"listening on {self.ftp_host} ...")
+            with self.connect_to_ftp() as conn:
+                found_task = False
+                while not found_task:
+                    for fname in conn.nlst():
+                        if fname.endswith(f".{self.sync_id}_request"):
+                            found_task = True
+                            self.download_from_ftp(conn, fname)
+                            self.delete_from_ftp(conn, fname)
+                            with open(fname, "r") as f:
+                                config = yaml.load(f, Loader=yaml.SafeLoader)
+                            self.remove_if_exists(fname)
+                            try:
+                                self.parse_actions(config)
+                            except Exception as e:
+                                logger.error(f"{e}")
+                    time.sleep(self.interval)
 
-    >>> import server
-    >>> server = FTPSync(server_name='my_server', ftp_host='114.51.4.191', ftp_username='xxx', ftp_password='xxx')
-    >>> server.listen()
+    def parse_settings(self, config: dict):
+        self.sync_id = config.get("sync_id")
+        self.sync_mode = config.get("sync_mode")
+        self.ftp_host = config.get("ftp_host")
+        self.ftp_username = config.get("ftp_username")
+        self.ftp_password = config.get("ftp_password")
+        self.ftp_encoding = config.get("ftp_encoding")
 
+    def parse_actions(self, config: dict):
+        actions = config.get("actions")
+        if actions is None:
+            raise Exception("actions not available")
+        for action in actions:
+            action: dict
+            action_type = action.get("type")
+            action_root = action.get("root")
+            device = action.get("device")
+            action_args = action.get("args")
+            if action_type == "pack":
+                if (device == "local" and self.sync_mode == "client") or (device == "remote" and self.sync_mode == "server"):
+                    self.action_pack(action_root, action_args)
+                else:
+                    self.listen_pack(action_args)
+            if action_type == "shell":
+                if (device == "local" and self.sync_mode == "client") or (device == "remote" and self.sync_mode == "server"):
+                    self.action_shell(action_root, action_args)
+                else:
+                    self.listen_shell(action_args)
 
-    Usage for client side:
-    >>> import server
-    >>> server = FTPSync(server_name='my_server', ftp_host='114.51.4.191', ftp_username='xxx', ftp_password='xxx')
-    >>> server.push('path/to/my.file')  # push files to the server
-    >>> server.pull('path/to/local.file')  # pull files from the server
-    >>> server.exec('make -C path/to')  # run command on the server
+    def action_shell(self, root, args: dict):
+        log_file = args.get("log_file")
+        command_list = args.get("command_list")
+        os.chdir(self.workdir)
+        os.chdir(os.path.abspath(root))
+        self.remove_if_exists(log_file)
+        abs_log_file = os.path.abspath(log_file)
+        for command in command_list:
+            print(f"> {command}")
+            os.system(f"echo \"> {command}\" >> {abs_log_file}")
+            os.system(f"{command} 2>&1 | tee -a {abs_log_file}")
+        self.upload_to_ftp(log_file)
+        self.remove_if_exists(log_file)
 
-    """
+    def listen_shell(self, args: dict):
+        log_file = args.get("log_file")
+        logger.success(f"listening for {log_file} ...")
+        os.chdir(self.workdir)
+        with self.connect_to_ftp() as conn:
+            while log_file not in conn.nlst():  # Wait for response
+                time.sleep(self.interval)
+            self.download_from_ftp(conn, log_file)
+            self.delete_from_ftp(conn, log_file)
+        with open(log_file, "r") as f:
+            for line in f.readlines():
+                print(line, end="")
+        self.remove_if_exists(log_file)
 
-    def __init__(self, server_name, ftp_host, ftp_username, ftp_password, ftp_encoding) -> None:
-        """Initializing method,
-        set attributes for self & ftp.
-        server_name: name of the server, use to distinguish between different servers
-        ftp_host: host for FTP
-        ftp_username: username for FTP
-        ftp_password: password for FTP
-        ftp_encoding: encoding for FTP
-        """
-        self.server_name = server_name
-        self.ftp_host = ftp_host
-        self.ftp_username = ftp_username
-        self.ftp_password = ftp_password
-        self.ftp_encoding = ftp_encoding
-        self.interval = 2
-        self.cwd = os.getcwd()
-        self.exec_root = os.getcwd()
-        self.verbose = True
+    def action_pack(self, root, args: dict):
+        send_tar = args.get("send_tar")
+        send_list = args.get("send_list")
+        os.chdir(self.workdir)
+        os.chdir(os.path.abspath(root))
+        with tarfile.open(send_tar, "w") as tf:
+            for file in send_list:
+                tf.add(file)
+                logger.success(f"add file: {file}")
+        self.upload_to_ftp(send_tar)
+        self.remove_if_exists(send_tar)
+
+    def listen_pack(self, args: dict):
+        send_tar = args.get("send_tar")
+        send_path = args.get("send_path")
+        logger.success(f"listening for {send_tar} ...")
+        os.chdir(self.workdir)
+        with self.connect_to_ftp() as conn:
+            while send_tar not in conn.nlst():  # Wait for response
+                time.sleep(self.interval)
+            self.download_from_ftp(conn, send_tar)
+            self.delete_from_ftp(conn, send_tar)
+        with tarfile.open(send_tar, "r") as tf:
+            tf.extractall(send_path)
+        self.remove_if_exists(send_tar)
+
+    def remove_if_exists(self, path):
+        """Remove local file."""
+        if os.path.exists(path):
+            logger.success(f"remove exist {path}")
+            os.system(f"rm -r {path}")
 
     def connect_to_ftp(self):
-        """Create connection to FTP."""
-        if self.verbose:
-            logger.success("connect to ftp")
         conn = FTP(self.ftp_host, encoding=self.ftp_encoding)
         conn.login(self.ftp_username, self.ftp_password)
         return conn
@@ -72,316 +153,41 @@ class FTPSync:
         if file exists, it will be removed first.
         """
         self.remove_if_exists(name)
-        if self.verbose:
-            logger.success(f"download ftp:{name}")
+        logger.success(f"download ftp:{name}")
         with open(name, "wb") as f:
             conn.retrbinary("RETR " + name, lambda data: f.write(data))
 
     def delete_from_ftp(self, conn: FTP, name):
         """Delete file from FTP."""
-        if self.verbose:
-            logger.success(f"delete ftp:{name}")
+        logger.success(f"delete ftp:{name}")
         if name in conn.nlst():
             conn.delete(name)
 
-    def upload_to_ftp(self, conn: FTP, path):
+    def upload_to_ftp(self, path):
         """Upload local file to FTP,
         during transfer, the file will be locked as xxx.transfer until it is completely uploaded.
         """
         filename = os.path.basename(path)
-        if self.verbose:
-            logger.success(f"upload ftp:{filename} ({(os.stat(path).st_size) / 1e6:.3f}MB) ...")
-        with open(path, "rb") as f:
-            if filename in conn.nlst():
-                conn.delete(filename)
-            if (filename + ".transfer") in conn.nlst():
-                conn.delete(filename + ".transfer")
-            conn.storbinary("STOR " + filename + ".transfer", f)
-        conn.rename(filename + ".transfer", filename)
-        assert filename in conn.nlst()
-        if self.verbose:
-            logger.success("upload finished")
-
-    def remove_if_exists(self, path):
-        """Remove local file."""
-        if os.path.exists(path):
-            if self.verbose:
-                logger.success(f"remove exist {path}")
-            os.system(f"rm -r {path}")
-
-    def parse_action_push(self, conn, name: str):
-        """Use suffix=.servername.push as PUSH mode
-        This action will push files from ftp to server side
-        files: ftp -> server
-        """
-        if self.verbose:
-            logger.success(f"> PUSH {name}")
-        self.download_from_ftp(conn, name)
-        self.delete_from_ftp(conn, name)
-        package_name = name.split(f".{self.server_name}.push")[0]
-        self.remove_if_exists(package_name)
-        if self.verbose:
-            logger.success(f"extract {name}")
-        with tarfile.open(name, "r") as tf:
-            tf.extractall(".")
-        self.remove_if_exists(name)
-
-    def parse_action_pull(self, conn, name: str):
-        """Use suffix=.servername.pull as PULL mode
-        This action will download files from server side to ftp
-        files: server -> ftp
-        """
-        if self.verbose:
-            logger.success(f"> PULL {name}")
-        self.download_from_ftp(conn, name)
-        self.delete_from_ftp(conn, name)
-        if self.verbose:
-            logger.success(f"archive {name}.recv")
-        with tarfile.open(f"{name}.recv", "w") as tf:
-            with open(name, "r") as f:
-                for line in f.readlines():
-                    tf.add(line.strip())
-        self.upload_to_ftp(conn, f"{name}.recv")
-        self.remove_if_exists(f"{name}.recv")
-        self.remove_if_exists(name)
-
-    def parse_action_exec(self, conn, name: str):
-        """Use suffix=.servername.exec as EXEC mode
-        This action will execute commands on server side and generate a log file
-        commands: server(run)
-        log file: server -> ftp
-        """
-        if self.verbose:
-            logger.success(f"> EXEC {name}")
-        os.chdir(self.exec_root)
-        self.download_from_ftp(conn, name)
-        self.delete_from_ftp(conn, name)
-        os.system(f"sh {name} 2>&1 | tee {name}.log")
-        self.upload_to_ftp(conn, f"{name}.log")
-        self.remove_if_exists(f"{name}.log")
-        self.remove_if_exists(name)
-        os.chdir(self.cwd)
-
-    def parse_action_conf(self, conn, name: str):
-        """Use suffix=.servername.conf as CONF mode
-        This action will edit configure by the input dict
-        commands: server(config)
-        log file: server -> ftp
-        """
-        if self.verbose:
-            logger.success(f"> CONF {name}")
-        self.download_from_ftp(conn, name)
-        self.delete_from_ftp(conn, name)
-        with open(name, "r") as f:
-            config = json.load(f)
-        chdir = None
-        with open(f"{name}.log", "w") as f:
-            for k, v in config.items():
-                if k == "exec_root":
-                    v = os.path.abspath(os.path.join(self.cwd, v))
-                    chdir = v
-                self.__dict__[k] = v
-                if self.verbose:
-                    logger.success(f"> SET {k}={v}")
-        self.upload_to_ftp(conn, f"{name}.log")
-        self.remove_if_exists(f"{name}.log")
-        self.remove_if_exists(name)
-        if chdir is not None:
-            if self.verbose:
-                logger.success(f"clean {chdir}")
-                os.system(f"mkdir -p {chdir}")
-                os.system(f"rm -rf {chdir}/*")
-            os.chdir(chdir)
-
-    def listen(self):
-        """Set self as a server and listening forever,
-        response to 3 types of requests:
-            1. xxx.servername.push
-            2. xxx.servername.pull
-            3. xxx.servername.exec
-        """
-        while True:  # loop forever
-            with self.connect_to_ftp() as conn:
-                if self.verbose:
-                    logger.success("listening on ftp://" + self.ftp_host + " ...")
-                has_req = False
-                while not has_req:
-                    try:
-                        for name in conn.nlst():
-                            if name.endswith(f".{self.server_name}.push"):
-                                self.parse_action_push(conn, name)
-                                has_req = True
-                            if name.endswith(f".{self.server_name}.pull"):
-                                self.parse_action_pull(conn, name)
-                                has_req = True
-                            elif name.endswith(f".{self.server_name}.exec"):
-                                self.parse_action_exec(conn, name)
-                                has_req = True
-                            elif name.endswith(f".{self.server_name}.conf"):
-                                self.parse_action_conf(conn, name)
-                                has_req = True
-                    except Exception as e:
-                        logger.error(f"{e}")
-                    time.sleep(self.interval)  # query interval
-
-    @staticmethod
-    def gen_package_name():
-        return datetime.datetime.now().strftime(r"%Y%m%dT%H%M%S")
-
-    # Client functions
-    def push(self, *path_list):
-        """Push local files to server,
-        files will be compressed and extract on server side.
-        """
-        package_name = self.gen_package_name()
-        package_name += f".{self.server_name}.push"
-        with tarfile.open(package_name, "w") as tf:
-            for path in path_list:
-                if self.verbose:
-                    logger.success("> PUSH " + path)
-                tf.add(path)
+        logger.success(f"upload ftp:{filename} ({(os.stat(path).st_size) / 1e6:.3f}MB) ...")
         with self.connect_to_ftp() as conn:
-            self.upload_to_ftp(conn, package_name)
-            while package_name in conn.nlst():  # Wait for receive
-                time.sleep(self.interval)
-        self.remove_if_exists(package_name)
-
-    def pull(self, *path_list):
-        """Pull files from server,
-        files will be compressed and be extracted on the other side.
-        """
-        package_name = self.gen_package_name()
-        package_name += f".{self.server_name}.pull"
-        with open(package_name, "w") as f:
-            for path in path_list:
-                if self.verbose:
-                    logger.success("> PULL " + path)
-                f.write(f"{path}\n")
-        with self.connect_to_ftp() as conn:
-            self.upload_to_ftp(conn, package_name)
-            self.remove_if_exists(package_name)
-            if self.verbose:
-                logger.success(f"listening for {package_name}.recv ...")
-            while f"{package_name}.recv" not in conn.nlst():  # Wait for response
-                time.sleep(self.interval)
-            self.download_from_ftp(conn, f"{package_name}.recv")
-            self.delete_from_ftp(conn, f"{package_name}.recv")
-        with tarfile.open(f"{package_name}.recv", "r") as tf:
-            tf.extractall(".")
-        self.remove_if_exists(f"{package_name}.recv")
-
-    def exec(self, *commands):
-        """Execute commands on server,
-        NOTE: all commands will be excuted in ONE shell file!
-        """
-        package_name = self.gen_package_name()
-        package_name += f".{self.server_name}.exec"
-        with open(package_name, "w") as f:
-            for command in commands:
-                f.write(f"{command}\n")
-                if self.verbose:
-                    logger.success(f'> EXEC "{command}"')
-        with self.connect_to_ftp() as conn:
-            self.upload_to_ftp(conn, package_name)
-            self.remove_if_exists(package_name)
-            if self.verbose:
-                logger.success(f"listening for {package_name}.log ...")
-            while f"{package_name}.log" not in conn.nlst():  # Wait for response
-                time.sleep(self.interval)
-            self.download_from_ftp(conn, f"{package_name}.log")
-            self.delete_from_ftp(conn, f"{package_name}.log")
-        # display logs
-        with open(f"{package_name}.log", "r") as f:
-            ret = f.readlines()
-        os.system(f"rm {package_name}.log")
-        if self.verbose:
-            for line in ret:
-                print(line, end="")
-        return ret
-
-    def conf(self, **kwargs):
-        """Set configurations on server by json"""
-        package_name = self.gen_package_name()
-        package_name += f".{self.server_name}.conf"
-        with open(package_name, "w") as f:
-            json.dump(kwargs, f)
-        for k, v in kwargs.items():  # sync locally too
-            self.__dict__[k] = v
-        if self.verbose:
-            logger.success(f'> CONF "{kwargs}"')
-        with self.connect_to_ftp() as conn:
-            self.upload_to_ftp(conn, package_name)
-            self.remove_if_exists(package_name)
-            if self.verbose:
-                logger.success(f"listening for {package_name}.log ...")
-            while f"{package_name}.log" not in conn.nlst():  # Wait for response
-                time.sleep(self.interval)
-            self.download_from_ftp(conn, f"{package_name}.log")
-            self.delete_from_ftp(conn, f"{package_name}.log")
-        # display logs
-        with open(f"{package_name}.log", "r") as f:
-            for line in f.readlines():
-                print(line, end="")
-        os.system(f"rm {package_name}.log")
+            with open(path, "rb") as f:
+                if filename in conn.nlst():
+                    conn.delete(filename)
+                if (filename + ".transfer") in conn.nlst():
+                    conn.delete(filename + ".transfer")
+                conn.storbinary("STOR " + filename + ".transfer", f)
+            conn.rename(filename + ".transfer", filename)
+            assert filename in conn.nlst()
+        logger.success("upload finished")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default=None, help="configuration file, see example_config.yml")
-    parser.add_argument("--listen", action="store_true", help="use this as a server")
-    parser.add_argument("--ssh", action="store_true", help="use this as a ssh connection")
-    parser.add_argument("--push", type=str, default=None, nargs="+", help="paths to push")
-    parser.add_argument("--pull", type=str, default=None, nargs="+", help="paths to pull")
-    parser.add_argument("--exec", type=str, default=None, nargs="+", help="commands to execute")
-    parser.add_argument("--interval", type=float, default=None, help="interval of query")
-    parser.add_argument("--root", type=str, default=None, help="root of self")
-
+    parser.add_argument("-c", "--config", type=str, default=None, help="configuration file, see example_config.yml")
     args = parser.parse_args()
 
-    yaml_file = args.config
-    if yaml_file is None:
-        raise Exception("Must specify config file, use --config MY_CONFIG.yml")
-    if not os.path.exists(yaml_file):
-        raise Exception("Config file path does not exist: %s" % yaml_file)
-
-    with open(yaml_file, "r") as f:
-        config = yaml.load(f, Loader=yaml.SafeLoader)
-        server = FTPSync(
-            server_name=config["server_name"],
-            ftp_host=config["ftp_host"],
-            ftp_username=config["ftp_username"],
-            ftp_password=config["ftp_password"],
-            ftp_encoding=config["ftp_encoding"],
-        )
-
-    if args.listen:  # Server mode
-        server.listen()
-    elif args.ssh:  # SSH mode
-        server.conf(interval=0.05)
-        server.verbose = False
-        root = server.exec("pwd")[0].strip()
-        print("(Enter 'exit' to quit)\n")
-        print(f"{root}> ", end="")
-        command = input()
-        while command != "exit":
-            if command.startswith("cd "):
-                root = command.split("cd ")[-1]
-                server.conf(exec_root=root)
-                root = server.exec("pwd")[0].strip()
-            else:
-                server.exec(command)
-            print(f"{root}> ", end="")
-            command = input()
-        server.conf(interval=4)
-    else:  # Sync mode
-        for x in sys.argv[1:]:
-            if x == "--exec":
-                server.exec(*args.exec)
-            elif x == "--push":
-                server.push(*args.push)
-            elif x == "--pull":
-                server.pull(*args.pull)
-            elif x == "--interval":
-                server.conf(interval=args.interval)
-            elif x == "--root":
-                server.conf(exec_root=args.root)
+    sync = FTPSync(args.config)
+    if sync.sync_mode == "client":
+        sync.task(args.config)
+    elif sync.sync_mode == "server":
+        sync.listen()
