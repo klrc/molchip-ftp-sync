@@ -10,8 +10,6 @@ Python FTP远程同步
 cp example_config.yaml my_config.yaml && vim my_config.yaml
 ```
 
-
-
 ### 2. 远程设备启动监听
 ```shell
 # 启动服务器
