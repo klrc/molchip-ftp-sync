@@ -174,17 +174,24 @@ class FTPSync:
         self.delete_from_ftp(conn, name)
         with open(name, "r") as f:
             config = json.load(f)
+        chdir = None
         with open(f"{name}.log", "w") as f:
             for k, v in config.items():
                 if k == "exec_root":
                     v = os.path.abspath(os.path.join(self.cwd, v))
-                    os.chdir(v)
+                    chdir = v
                 self.__dict__[k] = v
                 if self.verbose:
                     logger.success(f"> SET {k}={v}")
         self.upload_to_ftp(conn, f"{name}.log")
         self.remove_if_exists(f"{name}.log")
         self.remove_if_exists(name)
+        if chdir is not None:
+            if self.verbose:
+                logger.success(f"clean {chdir}")
+                os.system(f"mkdir -p {chdir}")
+                os.system(f"rm -rf {chdir}/*")
+            os.chdir(chdir)
 
     def listen(self):
         """Set self as a server and listening forever,
@@ -199,19 +206,22 @@ class FTPSync:
                     logger.success("listening on ftp://" + self.ftp_host + " ...")
                 has_req = False
                 while not has_req:
-                    for name in conn.nlst():
-                        if name.endswith(f".{self.server_name}.push"):
-                            self.parse_action_push(conn, name)
-                            has_req = True
-                        if name.endswith(f".{self.server_name}.pull"):
-                            self.parse_action_pull(conn, name)
-                            has_req = True
-                        elif name.endswith(f".{self.server_name}.exec"):
-                            self.parse_action_exec(conn, name)
-                            has_req = True
-                        elif name.endswith(f".{self.server_name}.conf"):
-                            self.parse_action_conf(conn, name)
-                            has_req = True
+                    try:
+                        for name in conn.nlst():
+                            if name.endswith(f".{self.server_name}.push"):
+                                self.parse_action_push(conn, name)
+                                has_req = True
+                            if name.endswith(f".{self.server_name}.pull"):
+                                self.parse_action_pull(conn, name)
+                                has_req = True
+                            elif name.endswith(f".{self.server_name}.exec"):
+                                self.parse_action_exec(conn, name)
+                                has_req = True
+                            elif name.endswith(f".{self.server_name}.conf"):
+                                self.parse_action_conf(conn, name)
+                                has_req = True
+                    except Exception as e:
+                        logger.error(f"{e}")
                     time.sleep(self.interval)  # query interval
 
     @staticmethod
