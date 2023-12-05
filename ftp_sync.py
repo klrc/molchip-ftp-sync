@@ -7,6 +7,7 @@ from ftplib import FTP
 from loguru import logger
 import sys
 import json
+import yaml
 
 fmt = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{message}</level>"
 config = {
@@ -38,7 +39,7 @@ class FTPSync:
 
     """
 
-    def __init__(self, server_name="sh", ftp_host="up", ftp_username="han.sun", ftp_password="Elpsycongroo0", ftp_encoding="gbk") -> None:
+    def __init__(self, server_name, ftp_host, ftp_username, ftp_password, ftp_encoding) -> None:
         """Initializing method,
         set attributes for self & ftp.
         server_name: name of the server, use to distinguish between different servers
@@ -313,21 +314,36 @@ class FTPSync:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default=None, help="configuration file, see example_config.yml")
     parser.add_argument("--listen", action="store_true", help="use this as a server")
     parser.add_argument("--ssh", action="store_true", help="use this as a ssh connection")
     parser.add_argument("--push", type=str, default=None, nargs="+", help="paths to push")
     parser.add_argument("--pull", type=str, default=None, nargs="+", help="paths to pull")
     parser.add_argument("--exec", type=str, default=None, nargs="+", help="commands to execute")
     parser.add_argument("--interval", type=float, default=None, help="interval of query")
-    parser.add_argument("-C", "--exec_root", type=str, default=None, help="root of self")
+    parser.add_argument("--root", type=str, default=None, help="root of self")
 
     args = parser.parse_args()
 
+    yaml_file = args.config
+    if yaml_file is None:
+        raise Exception("Must specify config file, use --config MY_CONFIG.yml")
+    if not os.path.exists(yaml_file):
+        raise Exception("Config file path does not exist: %s" % yaml_file)
+
+    with open(yaml_file, "r") as f:
+        config = yaml.load(f, Loader=yaml.SafeLoader)
+        server = FTPSync(
+            server_name=config["server_name"],
+            ftp_host=config["ftp_host"],
+            ftp_username=config["ftp_username"],
+            ftp_password=config["ftp_password"],
+            ftp_encoding=config["ftp_encoding"],
+        )
+
     if args.listen:  # Server mode
-        server = FTPSync()
         server.listen()
     elif args.ssh:  # SSH mode
-        server = FTPSync()
         server.conf(interval=0.05)
         server.verbose = False
         root = server.exec("pwd")[0].strip()
@@ -345,7 +361,6 @@ if __name__ == "__main__":
             command = input()
         server.conf(interval=4)
     else:  # Sync mode
-        server = FTPSync()
         for x in sys.argv[1:]:
             if x == "--exec":
                 server.exec(*args.exec)
@@ -355,5 +370,5 @@ if __name__ == "__main__":
                 server.pull(*args.pull)
             elif x == "--interval":
                 server.conf(interval=args.interval)
-            elif x == "-C" or x == "--exec_root":
-                server.conf(exec_root=args.exec_root)
+            elif x == "--root":
+                server.conf(exec_root=args.root)

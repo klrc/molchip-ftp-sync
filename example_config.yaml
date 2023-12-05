@@ -1,0 +1,5 @@
+server_name: EXAMPLE_GCC_01
+ftp_host: MY_FTP_HOST
+ftp_username: MY_FTP_USERNAME
+ftp_password: MY_FTP_PASSWORD
+ftp_encoding: MY_FTP_ENCODING
