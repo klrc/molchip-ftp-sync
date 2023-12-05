@@ -177,7 +177,8 @@ class FTPSync:
         with open(f"{name}.log", "w") as f:
             for k, v in config.items():
                 if k == "exec_root":
-                    v = os.path.abspath(os.path.join(self.exec_root, v))
+                    v = os.path.abspath(os.path.join(self.cwd, v))
+                    os.chdir(v)
                 self.__dict__[k] = v
                 if self.verbose:
                     logger.success(f"> SET {k}={v}")
