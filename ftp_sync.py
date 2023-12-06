@@ -36,22 +36,25 @@ class FTPSync:
     def listen(self):
         while True:
             logger.success(f"listening on {self.ftp_host} ...")
-            with self.connect_to_ftp() as conn:
-                found_task = False
-                while not found_task:
-                    for fname in conn.nlst():
-                        if fname.endswith(f".{self.sync_id}_request"):
-                            found_task = True
-                            self.download_from_ftp(conn, fname)
-                            self.delete_from_ftp(conn, fname)
-                            with open(fname, "r") as f:
-                                config = yaml.load(f, Loader=yaml.SafeLoader)
-                            self.remove_if_exists(fname)
-                            try:
-                                self.parse_actions(config)
-                            except Exception as e:
-                                logger.error(f"{e}")
-                    time.sleep(self.interval)
+            try:
+                with self.connect_to_ftp() as conn:
+                    found_task = False
+                    while not found_task:
+                        for fname in conn.nlst():
+                            if fname.endswith(f".{self.sync_id}_request"):
+                                found_task = True
+                                self.download_from_ftp(conn, fname)
+                                self.delete_from_ftp(conn, fname)
+                                with open(fname, "r") as f:
+                                    config = yaml.load(f, Loader=yaml.SafeLoader)
+                                self.remove_if_exists(fname)
+                                try:
+                                    self.parse_actions(config)
+                                except Exception as e:
+                                    logger.error(f"{e}")
+                        time.sleep(self.interval)
+            except Exception as e:
+                logger.error(f"{e}")
 
     def parse_settings(self, config: dict):
         self.sync_id = config.get("sync_id")
@@ -91,7 +94,7 @@ class FTPSync:
         abs_log_file = os.path.abspath(log_file)
         for command in command_list:
             print(f"> {command}")
-            os.system(f"echo \"> {command}\" >> {abs_log_file}")
+            os.system(f'echo "> {command}" >> {abs_log_file}')
             os.system(f"{command} 2>&1 | tee -a {abs_log_file}")
         self.upload_to_ftp(log_file)
         self.remove_if_exists(log_file)
