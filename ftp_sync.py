@@ -45,13 +45,13 @@ class FTPSync:
                                 found_task = True
                                 self.download_from_ftp(conn, fname)
                                 self.delete_from_ftp(conn, fname)
-                    with open(fname, "r") as f:
-                        config = yaml.load(f, Loader=yaml.SafeLoader)
-                    self.remove_if_exists(fname)
-                    try:
-                        self.parse_actions(config)
-                    except Exception as e:
-                        logger.error(f"{e}")
+                                with open(fname, "r") as f:
+                                    config = yaml.load(f, Loader=yaml.SafeLoader)
+                                self.remove_if_exists(fname)
+                                try:
+                                    self.parse_actions(config)
+                                except Exception as e:
+                                    logger.error(f"{e}")
                     time.sleep(self.interval)
             except Exception as e:
                 logger.error(f"{e}")
