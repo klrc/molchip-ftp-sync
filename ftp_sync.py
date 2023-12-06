@@ -94,7 +94,7 @@ class FTPSync:
         abs_log_file = os.path.abspath(log_file)
         for command in command_list:
             print(f"> {command}")
-            os.system(f"echo \"> {command}\" >> {abs_log_file}")
+            os.system(f'echo "> {command}" >> {abs_log_file}')
             os.system(f"{command} 2>&1 | tee -a {abs_log_file}")
         self.upload_to_ftp(log_file)
         self.remove_if_exists(log_file)
