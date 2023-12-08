@@ -37,21 +37,21 @@ class FTPSync:
         while True:
             logger.success(f"listening on {self.ftp_host} ...")
             try:
-                found_task = False
-                while not found_task:
+                request_name = None
+                while request_name is None:
                     with self.connect_to_ftp() as conn:
                         for fname in conn.nlst():
                             if fname.endswith(f".{self.sync_id}_request"):
-                                found_task = True
                                 self.download_from_ftp(conn, fname)
                                 self.delete_from_ftp(conn, fname)
-                                with open(fname, "r") as f:
-                                    config = yaml.load(f, Loader=yaml.SafeLoader)
-                                self.remove_if_exists(fname)
-                                try:
-                                    self.parse_actions(config)
-                                except Exception as e:
-                                    logger.error(f"{e}")
+                                request_name = fname
+                with open(request_name, "r") as f:
+                    config = yaml.load(f, Loader=yaml.SafeLoader)
+                self.remove_if_exists(request_name)
+                try:
+                    self.parse_actions(config)
+                except Exception as e:
+                    logger.error(f"{e}")
                     time.sleep(self.interval)
             except Exception as e:
                 logger.error(f"{e}")
