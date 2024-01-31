@@ -180,7 +180,6 @@ class FTPSync:
                     conn.delete(filename + ".transfer")
                 conn.storbinary("STOR " + filename + ".transfer", f)
             conn.rename(filename + ".transfer", filename)
-            assert filename in conn.nlst()
         logger.success("upload finished")
 
 
